@@ -43,8 +43,7 @@
 
 ### Rank 100: 菲伦
 
-
-
+<img align="right" src="assets/vlm_benchmark/86247.jpg" height="400" alt="测试图：菲伦（角色ID 86247）" />
 
 | 字段  | Ground Truth | 预测     | 匹配  |
 | --- | ------------ | ------ | --- |
@@ -62,8 +61,7 @@
 
 ### Rank 200: 折原临也
 
-
-
+<img align="right" src="assets/vlm_benchmark/10630.jpg" height="400" alt="测试图：折原临也（角色ID 10630）" />
 
 | 字段  | Ground Truth | 预测      | 匹配  |
 | --- | ------------ | ------- | --- |
@@ -81,8 +79,7 @@
 
 ### Rank 301: 水野爱
 
-
-
+<img align="right" src="assets/vlm_benchmark/65985.jpg" height="400" alt="测试图：水野爱（角色ID 65985）" />
 
 | 字段  | Ground Truth | 预测      | 匹配  |
 | --- | ------------ | ------- | --- |
@@ -100,8 +97,7 @@
 
 ### Rank 400: 园崎魅音
 
-
-
+<img align="right" src="assets/vlm_benchmark/2427.jpg" height="400" alt="测试图：园崎魅音（角色ID 2427）" />
 
 | 字段  | Ground Truth | 预测     | 匹配  |
 | --- | ------------ | ------ | --- |
@@ -119,8 +115,7 @@
 
 ### Rank 500: 本堂町小春
 
-
-
+<img align="right" src="assets/vlm_benchmark/74058.jpg" height="400" alt="测试图：本堂町小春（角色ID 74058）" />
 
 | 字段  | Ground Truth | 预测   | 匹配  |
 | --- | ------------ | ---- | --- |
@@ -138,8 +133,7 @@
 
 ### Rank 600: 妮姆芙
 
-
-
+<img align="right" src="assets/vlm_benchmark/8322.jpg" height="400" alt="测试图：妮姆芙（角色ID 8322）" />
 
 | 字段  | Ground Truth | 预测   | 匹配  |
 | --- | ------------ | ---- | --- |
@@ -157,8 +151,7 @@
 
 ### Rank 701: 雪野百香里
 
-
-
+<img align="right" src="assets/vlm_benchmark/19081.jpg" height="400" alt="测试图：雪野百香里（角色ID 19081）" />
 
 | 字段  | Ground Truth | 预测    | 匹配            |
 | --- | ------------ | ----- | ------------- |
@@ -176,8 +169,7 @@
 
 ### Rank 802: 安城鸣子
 
-
-
+<img align="right" src="assets/vlm_benchmark/11855.jpg" height="400" alt="测试图：安城鸣子（角色ID 11855）" />
 
 | 字段  | Ground Truth      | 预测  | 匹配  |
 | --- | ----------------- | --- | --- |
@@ -187,8 +179,7 @@
 
 ### Rank 904: 音无小鸟
 
-
-
+<img align="right" src="assets/vlm_benchmark/13843.jpg" height="400" alt="测试图：音无小鸟（角色ID 13843）" />
 
 | 字段  | Ground Truth | 预测         | 匹配  |
 | --- | ------------ | ---------- | --- |
@@ -211,8 +202,7 @@
 
 ### Rank 1001: 瑞克·桑切斯
 
-
-
+<img align="right" src="assets/vlm_benchmark/51183.jpg" height="400" alt="测试图：瑞克·桑切斯（角色ID 51183）" />
 
 | 字段  | Ground Truth | 预测     | 匹配  |
 | --- | ------------ | ------ | --- |
