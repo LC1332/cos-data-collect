@@ -4,6 +4,8 @@
 
 采集策略：从 Bangumi 排名 Top 4000 番剧出发 → 获取每部番剧的全部角色 → 补充角色详情（收藏数等） → 建立番剧↔角色关联 → 按收藏数截取 Top 15000 角色。
 
+**最近一次全量采集**（2026-04-02）：番剧 4000 部；去重后全量角色 **44459**（`characters_ranked_full.json`）；截取 Top **15000**（`characters_ranked.json`）；仅主角 **5122**（`main_characters_ranked.json`）；番剧→角色映射 **4000** 条（`anime_character_map.json`，与番剧一一对应）。
+
 > v1 数据（Top 300 番剧）已备份至 `local_data/bangumi/backup_v1_top300/`
 
 ---
@@ -12,7 +14,7 @@
 
 **描述**：Bangumi 排名 Top 4000 的动画条目，按 rank 升序排列。每条包含完整的条目信息（评分、收藏统计、标签、封面图等）。
 
-**记录数**：4000（目标值，实际取决于 Bangumi 数据量）
+**记录数**：4000（2026-04-02 全量采集实际值）
 
 **关键字段**：`id`, `name`, `name_cn`, `rating.rank`, `rating.score`, `collection`, `tags`, `images`
 
@@ -32,7 +34,7 @@
 
 **描述**：从 Top 4000 番剧中提取的所有角色（主角+配角），去重后按 Bangumi 收藏数（`collects`）降序排列，截取 Top 15000。每个角色带有 `relations` 字段记录其所属番剧及角色类型。完整未截断版本见 `characters_ranked_full.json`。
 
-**记录数**：15000（目标值，实际取决于角色总数）
+**记录数**：15000（从全量 44459 中去重排序后截取；2026-04-02 全量采集实际值）
 
 **关键字段**：`id`, `name`, `name_cn`, `collects`, `comments`, `gender`, `summary`, `images`, `relations[].subject_id`, `relations[].subject_name`, `relations[].relation`
 
@@ -52,7 +54,7 @@
 
 **描述**：`characters_ranked.json` 的子集，仅保留至少在一部番剧中担任"主角"的角色，按收藏数降序排列。
 
-**记录数**：751
+**记录数**：5122（2026-04-02 全量采集实际值）
 
 **关键字段**：同 `characters_ranked.json`
 
@@ -72,7 +74,7 @@
 
 **描述**：番剧→角色的映射表。每部番剧包含其主角和配角列表（已按角色收藏数排序），用于查看某部番剧有哪些角色。按番剧 rank 升序排列。
 
-**记录数**：4000（目标值，对应采集的番剧数）
+**记录数**：4000（与 `top_anime.json` 番剧条数一致；2026-04-02 全量采集实际值）
 
 **关键字段**：`subject_id`, `name`, `name_cn`, `rank`, `score`, `main_characters[]`, `supporting_characters[]`
 
@@ -117,6 +119,8 @@
 ## 7. `characters_ranked_full.json`
 
 **描述**：截断前的完整角色列表（按收藏数降序）。`characters_ranked.json` 是从此文件截取 Top N 后的结果。
+
+**记录数**：44459（2026-04-02 全量采集实际值）
 
 ## 8. `processed_anime_ids.json`
 
