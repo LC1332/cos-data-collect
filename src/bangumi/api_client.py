@@ -1,11 +1,13 @@
 """Bangumi API 客户端封装。
 
 基于 https://bangumi.github.io/api/ (v0) 文档实现。
+支持自适应限流和自动重试，适合大规模数据采集。
 """
 
 import os
 import time
 import logging
+import random
 from typing import Any, Dict, List, Optional, Union
 
 import requests
@@ -16,7 +18,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.bgm.tv"
-REQUEST_INTERVAL = 0.35  # 请求间隔(秒)，避免触发频率限制
+REQUEST_INTERVAL = 0.4
+MAX_RETRIES = 5
+RETRY_BACKOFF_BASE = 2
 
 
 class BangumiClient:
@@ -30,26 +34,62 @@ class BangumiClient:
         if self.api_key:
             self.session.headers["Authorization"] = f"Bearer {self.api_key}"
         self._last_request_time = 0.0
+        self._interval = REQUEST_INTERVAL
 
     def _throttle(self):
         elapsed = time.time() - self._last_request_time
-        if elapsed < REQUEST_INTERVAL:
-            time.sleep(REQUEST_INTERVAL - elapsed)
+        if elapsed < self._interval:
+            time.sleep(self._interval - elapsed)
         self._last_request_time = time.time()
 
-    def _get(self, path: str, params: Optional[dict] = None) -> Union[dict, list]:
-        self._throttle()
+    def _request(self, method: str, path: str, params=None, json_body=None) -> Union[dict, list]:
         url = f"{BASE_URL}{path}"
-        resp = self.session.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(1, MAX_RETRIES + 1):
+            self._throttle()
+            try:
+                if method == "GET":
+                    resp = self.session.get(url, params=params, timeout=30)
+                else:
+                    resp = self.session.post(url, json=json_body, params=params, timeout=30)
+
+                if resp.status_code == 429:
+                    wait = RETRY_BACKOFF_BASE ** attempt + random.uniform(0, 2)
+                    self._interval = min(self._interval * 1.5, 5.0)
+                    logger.warning(
+                        f"429 Too Many Requests, 等待 {wait:.1f}s, "
+                        f"间隔调整为 {self._interval:.2f}s (attempt {attempt}/{MAX_RETRIES})"
+                    )
+                    time.sleep(wait)
+                    continue
+
+                if resp.status_code >= 500:
+                    wait = RETRY_BACKOFF_BASE ** attempt + random.uniform(0, 1)
+                    logger.warning(f"HTTP {resp.status_code}, 重试 {attempt}/{MAX_RETRIES}, 等待 {wait:.1f}s")
+                    time.sleep(wait)
+                    continue
+
+                resp.raise_for_status()
+
+                if self._interval > REQUEST_INTERVAL:
+                    self._interval = max(self._interval * 0.95, REQUEST_INTERVAL)
+
+                return resp.json()
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"请求超时 {path}, 重试 {attempt}/{MAX_RETRIES}")
+                time.sleep(RETRY_BACKOFF_BASE ** attempt)
+            except requests.exceptions.ConnectionError:
+                wait = RETRY_BACKOFF_BASE ** attempt + random.uniform(0, 2)
+                logger.warning(f"连接错误 {path}, 等待 {wait:.1f}s, 重试 {attempt}/{MAX_RETRIES}")
+                time.sleep(wait)
+
+        raise requests.exceptions.RetryError(f"请求失败超过 {MAX_RETRIES} 次: {method} {path}")
+
+    def _get(self, path: str, params: Optional[dict] = None) -> Union[dict, list]:
+        return self._request("GET", path, params=params)
 
     def _post(self, path: str, json_body: dict, params: Optional[dict] = None) -> dict:
-        self._throttle()
-        url = f"{BASE_URL}{path}"
-        resp = self.session.post(url, json=json_body, params=params, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request("POST", path, params=params, json_body=json_body)
 
     # ── 条目 (Subject) ──
 

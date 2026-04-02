@@ -2,15 +2,17 @@
 
 所有数据存放在 `local_data/bangumi/` 目录下，来源于 Bangumi API (`api.bgm.tv`)。
 
-采集策略：从 Bangumi 排名 Top 300 番剧出发 → 获取每部番剧的全部角色 → 补充角色详情（收藏数等） → 建立番剧↔角色关联。
+采集策略：从 Bangumi 排名 Top 4000 番剧出发 → 获取每部番剧的全部角色 → 补充角色详情（收藏数等） → 建立番剧↔角色关联 → 按收藏数截取 Top 15000 角色。
+
+> v1 数据（Top 300 番剧）已备份至 `local_data/bangumi/backup_v1_top300/`
 
 ---
 
 ## 1. `top_anime.json`
 
-**描述**：Bangumi 排名 Top 300 的动画条目，按 rank 升序排列。每条包含完整的条目信息（评分、收藏统计、标签、封面图等）。
+**描述**：Bangumi 排名 Top 4000 的动画条目，按 rank 升序排列。每条包含完整的条目信息（评分、收藏统计、标签、封面图等）。
 
-**记录数**：300
+**记录数**：4000（目标值，实际取决于 Bangumi 数据量）
 
 **关键字段**：`id`, `name`, `name_cn`, `rating.rank`, `rating.score`, `collection`, `tags`, `images`
 
@@ -28,9 +30,9 @@
 
 ## 2. `characters_ranked.json`
 
-**描述**：从 Top 300 番剧中提取的所有角色（主角+配角），去重后按 Bangumi 收藏数（`collects`）降序排列。每个角色带有 `relations` 字段记录其所属番剧及角色类型。
+**描述**：从 Top 4000 番剧中提取的所有角色（主角+配角），去重后按 Bangumi 收藏数（`collects`）降序排列，截取 Top 15000。每个角色带有 `relations` 字段记录其所属番剧及角色类型。完整未截断版本见 `characters_ranked_full.json`。
 
-**记录数**：8416
+**记录数**：15000（目标值，实际取决于角色总数）
 
 **关键字段**：`id`, `name`, `name_cn`, `collects`, `comments`, `gender`, `summary`, `images`, `relations[].subject_id`, `relations[].subject_name`, `relations[].relation`
 
@@ -70,7 +72,7 @@
 
 **描述**：番剧→角色的映射表。每部番剧包含其主角和配角列表（已按角色收藏数排序），用于查看某部番剧有哪些角色。按番剧 rank 升序排列。
 
-**记录数**：300（对应 300 部番剧）
+**记录数**：4000（目标值，对应采集的番剧数）
 
 **关键字段**：`subject_id`, `name`, `name_cn`, `rank`, `score`, `main_characters[]`, `supporting_characters[]`
 
@@ -88,9 +90,9 @@
 
 ## 5. `anime_characters_raw.json`
 
-**描述**：从番剧角色接口直接获取的原始数据，未经过详情补充。每个角色记录了其出现在哪些番剧中及角色类型。按采集顺序排列（即按番剧 rank 顺序遍历）。
+**描述**：从番剧角色接口直接获取的原始数据，未经过详情补充。每个角色记录了其出现在哪些番剧中及角色类型。支持增量抓取（通过 `processed_anime_ids.json` 追踪已处理番剧）。
 
-**记录数**：8416
+**记录数**：随采集范围增长
 
 **关键字段**：`id`, `name`, `type`, `images`, `relations[].subject_id`, `relations[].subject_name`, `relations[].relation`
 
@@ -110,7 +112,19 @@
 
 **描述**：在 `anime_characters_raw.json` 基础上，逐个调用角色详情接口补充了 `collects`（收藏数）、`comments`（评论数）、`name_cn`（中文名）、`gender`（性别）、`summary`（简介）等字段。是 `characters_ranked.json` 排序前的中间产物，同时用于断点续传缓存。
 
-**记录数**：8416
+**记录数**：随采集范围增长
+
+## 7. `characters_ranked_full.json`
+
+**描述**：截断前的完整角色列表（按收藏数降序）。`characters_ranked.json` 是从此文件截取 Top N 后的结果。
+
+## 8. `processed_anime_ids.json`
+
+**描述**：已完成角色抓取的番剧 ID 列表，用于增量抓取时跳过已处理的番剧。
+
+## 9. `backup_v1_top300/`
+
+**描述**：v1 版本（Top 300 番剧，8416 角色）的完整备份。
 
 **关键字段**：同 `anime_characters_raw.json` + `collects`, `comments`, `name_cn`, `gender`, `summary`
 

@@ -1,4 +1,4 @@
-"""LLM 客户端：通过 OpenAI 兼容接口调用 Winky 代理的模型。"""
+"""LLM 客户端：通过 OpenAI 兼容接口调用配置的转发端点上的模型。"""
 
 import os
 import json
@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_llm_client(base_url: Optional[str] = None) -> OpenAI:
-    api_key = os.getenv("WINKY_API_KEY", "").strip()
-    base_url = base_url or os.getenv("WINKY_BASE_URL", "").strip()
+    api_key = os.getenv("CUSTOM_API_KEY", "").strip()
+    base_url = base_url or os.getenv("CUSTOM_BASE_URL", "").strip()
     if not api_key or not base_url:
-        raise ValueError("请在 .env 中配置 WINKY_API_KEY 和 WINKY_BASE_URL")
+        raise ValueError("请在 .env 中配置 CUSTOM_API_KEY 和 CUSTOM_BASE_URL")
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
@@ -37,7 +37,7 @@ def chat_completion_json(
     max_tokens: int = 2048,
 ) -> dict:
     """发送聊天请求并尝试解析 JSON 返回。"""
-    model = model or os.getenv("WINKY_MODEL", "deepseek-chat")
+    model = model or os.getenv("CUSTOM_MODEL", "deepseek-chat")
     logger.info(f"调用 LLM: model={model}, prompt长度={len(user_prompt)}")
 
     kwargs = dict(

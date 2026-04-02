@@ -2,15 +2,18 @@
 
 策略: 从 top 番剧出发 → 获取每部番剧的角色 → 建立番剧-角色关联 → 按收藏数排序。
 这样既保证角色来自热门番剧，又自然地维护了番剧和角色的关系。
+
+v2: 扩展到 top 4000 番剧，取角色 top 15000。支持增量抓取。
 """
 
+import argparse
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -27,6 +30,9 @@ DATA_DIR = PROJECT_ROOT / "local_data" / "bangumi"
 INFO_DIR = PROJECT_ROOT / "information"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 INFO_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_TOP_ANIME = 4000
+DEFAULT_TOP_CHARACTERS = 15000
 
 
 # ── 工具函数 ──
@@ -56,7 +62,7 @@ def _sizeof(data):
 
 # ── Step 1: 获取 top N 番剧 ──
 
-def fetch_top_anime(client, top_n=300, cache_file="top_anime.json"):
+def fetch_top_anime(client, top_n=DEFAULT_TOP_ANIME, cache_file="top_anime.json"):
     """通过 GET /v0/subjects?type=2&sort=rank 分页获取排名前 N 的动画。"""
     cached = load_json(cache_file)
     if cached and len(cached) >= top_n:
@@ -81,32 +87,60 @@ def fetch_top_anime(client, top_n=300, cache_file="top_anime.json"):
     return results
 
 
-# ── Step 2: 从番剧获取角色 & 建立关联 ──
+# ── Step 2: 从番剧获取角色 & 建立关联（支持增量） ──
+
+PROCESSED_ANIME_FILE = "processed_anime_ids.json"
+
+
+def _load_processed_anime_ids() -> Set[int]:
+    data = load_json(PROCESSED_ANIME_FILE)
+    if data:
+        return set(data)
+    return set()
+
+
+def _save_processed_anime_ids(ids: Set[int]):
+    save_json(sorted(ids), PROCESSED_ANIME_FILE)
+
 
 def fetch_characters_from_anime(
     client, anime_list, cache_file="anime_characters_raw.json",
 ):
-    """为每部番剧调用 /v0/subjects/{id}/characters，返回:
+    """为每部番剧调用 /v0/subjects/{id}/characters，支持增量抓取。
 
-    characters: {char_id: {id, name, type, relations: [{subject_id, subject_name, relation}]}}
+    通过 processed_anime_ids.json 追踪已处理的番剧，
+    仅对新增的番剧发起 API 请求，并将结果合并到已有角色数据中。
     """
+    characters = {}  # type: Dict[int, dict]
+
     cached = load_json(cache_file)
     if cached:
-        logger.info(f"使用缓存的番剧角色关联 ({len(cached)} 个角色)")
-        return cached
+        for ch in cached:
+            characters[ch["id"]] = ch
+        logger.info(f"已加载缓存角色: {len(characters)} 个")
 
-    characters = {}  # type: Dict[int, dict]
-    total = len(anime_list)
+    processed_ids = _load_processed_anime_ids()
+    new_anime = [a for a in anime_list if a["id"] not in processed_ids]
 
-    for idx, anime in enumerate(anime_list):
+    if not new_anime:
+        logger.info(f"所有 {len(anime_list)} 部番剧均已处理，无需增量抓取")
+        return list(characters.values())
+
+    logger.info(
+        f"番剧总数: {len(anime_list)}, 已处理: {len(processed_ids)}, "
+        f"本次新增: {len(new_anime)}"
+    )
+
+    for idx, anime in enumerate(new_anime):
         sid = anime["id"]
         sname = anime.get("name_cn") or anime.get("name", "")
-        logger.info(f"  [{idx+1}/{total}] {sname} (id={sid})")
+        logger.info(f"  [{idx+1}/{len(new_anime)}] {sname} (id={sid})")
 
         try:
             char_list = client.get_subject_characters(sid)
         except Exception as e:
             logger.warning(f"    失败: {e}")
+            processed_ids.add(sid)
             continue
 
         for ch in char_list:
@@ -126,9 +160,18 @@ def fetch_characters_from_anime(
                 "relation": relation,
             })
 
+        processed_ids.add(sid)
+
+        if (idx + 1) % 100 == 0:
+            char_list_out = list(characters.values())
+            save_json(char_list_out, cache_file)
+            _save_processed_anime_ids(processed_ids)
+            logger.info(f"  === 中间保存: {len(char_list_out)} 角色, {len(processed_ids)} 番剧 ===")
+
     char_list_out = list(characters.values())
     save_json(char_list_out, cache_file)
-    logger.info(f"共提取 {len(char_list_out)} 个去重角色")
+    _save_processed_anime_ids(processed_ids)
+    logger.info(f"共提取 {len(char_list_out)} 个去重角色 (来自 {len(processed_ids)} 部番剧)")
     return char_list_out
 
 
@@ -188,15 +231,25 @@ def enrich_characters(client, char_list, cache_file="characters_enriched.json"):
 
 # ── Step 4: 汇总输出 ──
 
-def build_final_outputs(anime_list, char_list):
+def build_final_outputs(anime_list, char_list, top_characters=None):
     """生成最终的结构化数据：
 
-    1. 角色列表（按 collects 降序）
+    1. 角色列表（按 collects 降序，可截断为 top N）
     2. 番剧-角色映射（每部番剧的主角/配角列表）
     3. 汇总 markdown 报告
     """
-    # 按收藏排序
     sorted_chars = sorted(char_list, key=lambda x: x.get("collects", 0), reverse=True)
+
+    save_json(sorted_chars, "characters_ranked_full.json")
+    logger.info(f"完整角色列表: {len(sorted_chars)} 个")
+
+    if top_characters and len(sorted_chars) > top_characters:
+        logger.info(
+            f"截断至 top {top_characters} 角色 "
+            f"(最低收藏数: {sorted_chars[top_characters - 1].get('collects', 0)})"
+        )
+        sorted_chars = sorted_chars[:top_characters]
+
     save_json(sorted_chars, "characters_ranked.json")
 
     # 番剧→角色映射
@@ -242,7 +295,11 @@ def build_final_outputs(anime_list, char_list):
     return sorted_chars, anime_char_list, main_chars
 
 
-def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars):
+def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars, total_chars_before_truncate=None):
+    total_note = ""
+    if total_chars_before_truncate and total_chars_before_truncate > len(sorted_chars):
+        total_note = f" (从 {total_chars_before_truncate} 个中截取)"
+
     lines = [
         "# Bangumi 数据采集汇总\n",
         f"采集时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
@@ -250,7 +307,7 @@ def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars):
         f"| 指标 | 数量 |",
         f"|------|------|",
         f"| 番剧数量 | {len(anime_list)} |",
-        f"| 角色总数（去重） | {len(sorted_chars)} |",
+        f"| 角色总数（截取后） | {len(sorted_chars)}{total_note} |",
         f"| 其中主角数量 | {len(main_chars)} |",
         "",
         "## 番剧 Top 50（按 Bangumi 排名）\n",
@@ -284,10 +341,12 @@ def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars):
     lines.append("## 数据文件说明\n")
     lines.append("| 文件 | 说明 |")
     lines.append("|------|------|")
-    lines.append("| `top_anime.json` | Top 300 番剧完整数据 |")
-    lines.append("| `characters_ranked.json` | 所有角色（按收藏数排序），含番剧关联 |")
+    lines.append(f"| `top_anime.json` | Top {len(anime_list)} 番剧完整数据 |")
+    lines.append(f"| `characters_ranked.json` | Top {len(sorted_chars)} 角色（按收藏数排序），含番剧关联 |")
+    lines.append("| `characters_ranked_full.json` | 所有角色完整列表（截断前） |")
     lines.append("| `main_characters_ranked.json` | 仅主角（按收藏数排序） |")
     lines.append("| `anime_character_map.json` | 番剧→角色映射（每部番剧的主角/配角列表） |")
+    lines.append("| `backup_v1_top300/` | v1 版本 (top 300 番剧) 的备份数据 |")
 
     summary_path = INFO_DIR / "bangumi_summary.md"
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -296,32 +355,73 @@ def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Bangumi 数据采集")
+    parser.add_argument(
+        "--top-anime", type=int, default=DEFAULT_TOP_ANIME,
+        help=f"抓取排名前 N 的番剧 (默认 {DEFAULT_TOP_ANIME})",
+    )
+    parser.add_argument(
+        "--top-characters", type=int, default=DEFAULT_TOP_CHARACTERS,
+        help=f"保留排名前 N 的角色 (默认 {DEFAULT_TOP_CHARACTERS}，0=不截断)",
+    )
+    parser.add_argument(
+        "--skip-enrich", action="store_true",
+        help="跳过角色详情补充步骤（适用于只想先拉番剧和角色列表）",
+    )
+    parser.add_argument(
+        "--output-only", action="store_true",
+        help="仅从已有缓存重新生成输出文件，不发起任何 API 请求",
+    )
+    args = parser.parse_args()
+
+    top_anime_n = args.top_anime
+    top_char_n = args.top_characters or None
+
     client = BangumiClient()
     logger.info("=" * 60)
     logger.info("Bangumi 数据采集开始")
+    logger.info(f"  目标: Top {top_anime_n} 番剧 → Top {top_char_n or '全部'} 角色")
     logger.info("=" * 60)
 
-    # Step 1
-    logger.info("\n[Step 1/4] 获取人气 Top 300 番剧")
-    anime_list = fetch_top_anime(client, top_n=300)
+    if args.output_only:
+        logger.info("--output-only 模式: 从缓存重新生成输出")
+        anime_list = load_json("top_anime.json") or []
+        char_list = load_json("characters_enriched.json") or load_json("anime_characters_raw.json") or []
+        if not anime_list or not char_list:
+            logger.error("缓存数据不存在，无法使用 --output-only 模式")
+            sys.exit(1)
+        anime_list = anime_list[:top_anime_n]
+    else:
+        # Step 1
+        logger.info(f"\n[Step 1/4] 获取人气 Top {top_anime_n} 番剧")
+        anime_list = fetch_top_anime(client, top_n=top_anime_n)
 
-    # Step 2
-    logger.info("\n[Step 2/4] 从番剧获取角色 & 建立关联")
-    char_list = fetch_characters_from_anime(client, anime_list)
+        # Step 2
+        logger.info("\n[Step 2/4] 从番剧获取角色 & 建立关联 (增量)")
+        char_list = fetch_characters_from_anime(client, anime_list)
 
-    # Step 3
-    logger.info("\n[Step 3/4] 补充角色详情 (collects / name_cn / gender)")
-    char_list = enrich_characters(client, char_list)
+        # Step 3
+        if args.skip_enrich:
+            logger.info("\n[Step 3/4] 跳过角色详情补充 (--skip-enrich)")
+        else:
+            logger.info("\n[Step 3/4] 补充角色详情 (collects / name_cn / gender)")
+            char_list = enrich_characters(client, char_list)
 
     # Step 4
     logger.info("\n[Step 4/4] 汇总输出")
-    sorted_chars, anime_char_list, main_chars = build_final_outputs(anime_list, char_list)
-    generate_summary(anime_list, sorted_chars, anime_char_list, main_chars)
+    total_before = len(char_list)
+    sorted_chars, anime_char_list, main_chars = build_final_outputs(
+        anime_list, char_list, top_characters=top_char_n,
+    )
+    generate_summary(
+        anime_list, sorted_chars, anime_char_list, main_chars,
+        total_chars_before_truncate=total_before,
+    )
 
     logger.info("\n" + "=" * 60)
     logger.info("采集完成!")
     logger.info(f"  番剧: {len(anime_list)} 部")
-    logger.info(f"  角色(全部): {len(sorted_chars)} 个")
+    logger.info(f"  角色(截取后): {len(sorted_chars)} 个 (全部: {total_before})")
     logger.info(f"  角色(主角): {len(main_chars)} 个")
     logger.info("=" * 60)
 

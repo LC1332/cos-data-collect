@@ -12,124 +12,57 @@
 - [x] 获取角色的图片数据集
 - [ ] (optional) 增补游戏列表和游戏数据
 - [ ] （optionl）可以看看什么角色的手办卖得比较火 如果能爬的话
-- [ ] 建立动漫 & 人物名称简写的prompt和get_response
-- [ ] 使用 人物名称 cosplay 动漫简写 作为搜索词，连接bing_donwloader
-- [ ] 调整搜索列表清单 重新搜索top 2000的番剧中，所有角色中的top10000角色
+- [x] 建立动漫 & 人物名称简写的prompt和get_response
+- [x] 使用 人物名称 cosplay 动漫简写 作为搜索词，连接bing_donwloader
+- [x] 增加一个VLM判断哪几个是真的这个角色cosplay的，如果都判断不是，在下载过程中再增加一次query
+- [x] 调整搜索列表清单 扩展至top 4000番剧，取角色top 15000（支持增量抓取）
+- [x] 建立一个简单的VLM naive识别的benchmark
 - [ ] 逐个抓取角色的cosplay图像
 - [ ] 清理角色和cosplay的所有数据
 
+# 一个简易的VLM识别的benchmark
 
-# 进行cosplay图片的搜索
+这里我们发现VLM本来就具有一定的视觉识别的能力
 
-这里我希望借助 better-bing-image-downloader 这个库
-对每个角色的cosplay的图进行搜索，获得top5的结果
-对于每个角色 调用gpt-5-mini 获取简化角色名之后
-使用 "{简化角色名} cosplay {简化番剧名}"的形式 
-从搜索结果上 争取成功获取前5张图片 保存在local_data
+因为我后台实际上还在抓取角色的名单，我希望你根据现存的
+角色结果，整理出一个临时的characters_ranked.json
 
-然后帮我实验top 30角色这么搜索的结果
-另外写一个脚本可以支持到时候我在服务器上运行 top 1000的批量下载
+然后这里我希望针对rank = 100, 200 ,... 1000 的角色
 
-然后给我做一个html页面来展示top 30 角色 cosplay 搜索的结果
-（支持原角色图 + 5 个结果图的对比）
+使用管线去寻找他们的cos图，
+如果100i的找不到，就顺位找100i+1的（至多尝试到100i+4）
 
-# 调整搜索列表清单
+每个角色找到一个cos图就可以了
+然后相当于凑出10个不同角色的测试样本
 
-我发现top300的剧集里面，其实很多配角不是很高频的角色
+然后我要用思维力链（类似src/brief_name/get_brief_names.py中的方式）
+去询问VLM 当前图片中的人物在cos什么番剧/游戏中的什么角色， 分别要求下面的字段
 
-所以我希望重建bangumi的清单，把剧集拓展到top 4000的番剧的角色
-并且考虑top4000番剧 角色中 的top 15000 个角色就可以
+- caption 先描述图片中的人物特点、职业等详细信息
+- analysis 分析图片中的人物应该是cos什么番剧的什么角色
+- character_name 输出cos角色的名字
+- bangumi_name 输出番剧的名字
 
-在你开始之前，备份所有的bangumi之前的结果 特别是characters_ranked.json
+注意我在.env也增加了zhipu的api key，
+测试通过 `.env` 配置的 Gemini / OpenAI 等带视觉能力的模型的结果
+并且额外也测试一下
+至少包括
+gemini-3-flash
+gpt-5-mini
+GLM-4.6V-FlashX
+claude的haiku
 
-# 用LLM获得人物简写
+# 模块说明（分功能需求）
 
-在src中新建一个独立的子文件夹来管理这部分代码
+各子功能的详细需求与说明见对应目录：
 
-这里我们即将使用  角色名 + cosplay + 番名的形式进行图片搜索
-来搜索每个角色可能的cosplay照片
-
-但是这里有一个问题， 我们一般在描述一个角色的时候
-往往都会使用其角色和番剧的简称
-
-比如 
-"攻殻機動隊 S.A.C. 2nd GIG " --> "攻壳机动队"
-"惣流·明日香·兰格雷" --> "明日香"
-"阿尔托莉雅·潘德拉贡" --> "阿尔托莉雅"
-"艾伦·耶格尔" --> "艾伦"
-
-所以对于角色名和番剧名，我们都希望变成简写
-
-所以这里我们希望构造一个llm的prompt，并且调用llm来获得番剧和角色名的简写，大致的prompt如下
-
-```
-请根据给定的角色和番剧信息，以json形式向我返回大家最能接受的角色简称和番剧简称（如有）
-
-简称映射的例子:
-"攻殻機動隊 S.A.C. 2nd GIG " --> "攻壳机动队"
-"惣流·明日香·兰格雷" --> "明日香"
-"新世纪福音战士" --> "EVA"
-"阿尔托莉雅·潘德拉贡" --> "阿尔托莉雅"
-"艾伦·耶格尔" --> "艾伦"
-"初音未来" --> "初音未来"
-（如果有中文字使用简体中文）
-
-需要获取简称和番剧简称的角色为
-{这里根据character_ranked中的信息，尤其要给出角色的name name_cn 以及出场的所有番剧}
-
-以JSON形式返回你的分析和结果，并包含以下所有字段
-- decide_if_brief 简单分析 是否要对角色和番剧进行简称，如果原来的番剧名或者角色名已经足够简洁，可以进行直接沿用
-- analysis 大家最常用的简称是哪些，大家一般怎么称呼这个番剧和角色，使用简称的角色*番剧是不是能够基本定位到这个角色
-- brief_name 角色的简称
-- brief_bangumi 番剧的简称
-```
-
-我需要你构造这样一个prompt，使得任何一个角色都可以去获取其简称和番剧的简称。
-
-然后获取的结果也可以缓存到 local_data的特定文件中。
-
-至于llm的选取我们使用 WINKY_API_KEY 的代理
-具体说明可以参考 winky/instruction.md
-使用一个相对经济的模型 
-注意不要把base url和key透露在代码里！
-
-然后在top1000的角色中 随机5个角色进行实验
-
-结果以md形式输出到information中
-
-
-# 角色图片数据集的需求
-
-注意到我们已经在local_data/bangumi/characters_ranked.json 中间获取了角色的信息
-
-这里我希望对每个图片的image进行抓取
-抓两张有效的就可以（按照从large medium grid small的优先级）
-链接访问失败可以支持5次重试
-
-保存下来的图片在local_data里面搞个文件夹 要有严格一点的命名体系方便我顺着角色仍然能找到local的图片
-
-我整体的抓取程序会放在服务器上运行
-我希望整体的抓取可以放在2-3天，帮我设置合理的延时避免冲爆 bgm.tv的服务器
-
-在本地你帮我抓top 30个角色就可以了
-
-另外再做个html可以展示角色图片和角色名（每个角色1张）
-
-然后做个sh脚本方便我直接在服务器上运行抓取
-
-# bangumi调研的需求描述
-
-我已经在.env中配置了 BANGUMI_API_KEY
-
-阅读 https://bangumi.github.io/api/  学会api的使用
-
-我想找的是 
-
-- 人气top 300的番剧列表
-- 人气top500的角色
-- (opt) 尝试能不能获取人气top 3000的角色列表
-- 如果不能获取3000个角色，尝试从 top300剧目中获取主要角色
-- 两者取并集
+| 目录 | 说明 |
+|------|------|
+| [src/bangumi/readme.md](src/bangumi/readme.md) | Bangumi API 调研、清单调整（top 4000 / 角色 top 15000）、角色参考图抓取与服务器脚本 |
+| [src/brief_name/readme.md](src/brief_name/readme.md) | 用 LLM 获取角色/番剧简称、缓存与实验输出 |
+| [src/cosplay_search/readme.md](src/cosplay_search/readme.md) | Bing 类下载、搜索词格式、批量与 HTML 展示 |
+| [src/cosplay_analysis/readme.md](src/cosplay_analysis/readme.md) | Gemini VLM 拼图鉴定、二次搜索 pipeline、以角色 ID 存储 |
+| [src/vlm_benchmark/readme.md](src/vlm_benchmark/readme.md) | VLM naive 识别 benchmark，多模型对比测试 |
 
 # protocol
 
@@ -138,4 +71,3 @@
 - 总结性信息放 information/ 文件夹
 - 这个项目可以先不用uv进行环境管理 之后我移到服务器上的时候再搞uv
 - 如果项目有一些疑问，可以累积一些问题之后暂停你的运行，在readme的to_be_owner_check中增- 加问题留owner确认
-

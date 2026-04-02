@@ -60,7 +60,7 @@ USER_PROMPT_TEMPLATE = """\
 {relations_text}
 
 以JSON形式返回你的分析和结果，并包含以下所有字段（按顺序逐步思考）：
-- decide_if_brief: 简单分析是否需要对角色和番剧进行简称，如果原来的番剧名或者角色名已经足够简洁（5个中文字以内其实就不用继续缩写了），可以直接沿用
+- decide_if_brief: 简单分析是否需要对角色和番剧进行简称，如果原来的番剧名或者角色名已经足够简洁（五个中文字以内就肯定不用继续缩写了），可以直接沿用
 - analysis: 大家最常用的简称是哪些，大家一般怎么称呼这个番剧和角色，使用简称的角色×番剧是不是能够基本定位到这个角色
 - brief_name: 角色的简称（字符串）
 - brief_bangumi: 该角色最具代表性的番剧的简称（字符串）
@@ -139,7 +139,7 @@ def run_experiment(
 ):
     """在 top 1000 角色中随机选取 n_samples 个进行实验。"""
     client = get_llm_client(base_url=base_url)
-    model = model or os.getenv("WINKY_MODEL", "deepseek-chat")
+    model = model or os.getenv("CUSTOM_MODEL", "deepseek-chat")
     characters = load_characters(top_n=1000)
     cache = load_cache(model)
 
@@ -181,7 +181,7 @@ def generate_report(
     model: Optional[str] = None,
 ):
     """生成实验报告到 information/ 目录。"""
-    model = model or os.getenv("WINKY_MODEL", "deepseek-chat")
+    model = model or os.getenv("CUSTOM_MODEL", "deepseek-chat")
     lines = [
         "# LLM 角色简称实验报告\n",
         f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
