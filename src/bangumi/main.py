@@ -1,10 +1,7 @@
 """Bangumi 数据采集主入口。
 
-功能:
-1. 获取人气 top 300 番剧
-2. 尝试获取人气 top 500 / 3000 角色 (通过角色收藏数排序)
-3. 从 top 300 番剧中提取主要角色作为补充
-4. 取并集，输出最终角色列表
+策略: 从 top 番剧出发 → 获取每部番剧的角色 → 建立番剧-角色关联 → 按收藏数排序。
+这样既保证角色来自热门番剧，又自然地维护了番剧和角色的关系。
 """
 
 import json
@@ -13,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -32,227 +29,269 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 INFO_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def fetch_top_anime(client: BangumiClient, top_n: int = 300) -> List[dict]:
-    """通过 GET /v0/subjects 获取排名前 N 的动画。
+# ── 工具函数 ──
 
-    API limit 上限为 50，需要分页。
-    """
+def save_json(data, filename, directory=DATA_DIR):
+    path = directory / filename
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info(f"已保存: {path}  ({_sizeof(data)} 条)")
+
+
+def load_json(filename, directory=DATA_DIR):
+    path = directory / filename
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def _sizeof(data):
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return len(data)
+    return "?"
+
+
+# ── Step 1: 获取 top N 番剧 ──
+
+def fetch_top_anime(client, top_n=300, cache_file="top_anime.json"):
+    """通过 GET /v0/subjects?type=2&sort=rank 分页获取排名前 N 的动画。"""
+    cached = load_json(cache_file)
+    if cached and len(cached) >= top_n:
+        logger.info(f"使用缓存的番剧列表 ({len(cached)} 部)")
+        return cached[:top_n]
+
     PAGE_SIZE = 50
-    results = []  # type: List[dict]
+    results = []
     offset = 0
-
     while offset < top_n:
         limit = min(PAGE_SIZE, top_n - offset)
-        logger.info(f"正在获取番剧排行: offset={offset}, limit={limit}")
-        page = client.browse_subjects(
-            subject_type=2, sort="rank", limit=limit, offset=offset,
-        )
+        logger.info(f"  获取番剧排行: offset={offset}, limit={limit}")
+        page = client.browse_subjects(subject_type=2, sort="rank", limit=limit, offset=offset)
         data = page.get("data", [])
         if not data:
-            logger.warning(f"offset={offset} 时返回空数据，提前结束")
             break
         results.extend(data)
         offset += len(data)
 
     logger.info(f"共获取 {len(results)} 部番剧")
+    save_json(results, cache_file)
     return results
 
 
-def fetch_characters_from_anime(
-    client: BangumiClient,
-    anime_list: List[dict],
-    main_only: bool = True,
-) -> Dict[int, dict]:
-    """从番剧列表中提取角色。返回 {character_id: info}。
+# ── Step 2: 从番剧获取角色 & 建立关联 ──
 
-    main_only=True 时只取"主角"关系的角色。
+def fetch_characters_from_anime(
+    client, anime_list, cache_file="anime_characters_raw.json",
+):
+    """为每部番剧调用 /v0/subjects/{id}/characters，返回:
+
+    characters: {char_id: {id, name, type, relations: [{subject_id, subject_name, relation}]}}
     """
+    cached = load_json(cache_file)
+    if cached:
+        logger.info(f"使用缓存的番剧角色关联 ({len(cached)} 个角色)")
+        return cached
+
     characters = {}  # type: Dict[int, dict]
     total = len(anime_list)
 
     for idx, anime in enumerate(anime_list):
-        subject_id = anime["id"]
-        subject_name = anime.get("name_cn") or anime.get("name", "")
-        logger.info(f"[{idx+1}/{total}] 获取角色: {subject_name} (id={subject_id})")
+        sid = anime["id"]
+        sname = anime.get("name_cn") or anime.get("name", "")
+        logger.info(f"  [{idx+1}/{total}] {sname} (id={sid})")
 
         try:
-            char_list = client.get_subject_characters(subject_id)
+            char_list = client.get_subject_characters(sid)
         except Exception as e:
-            logger.warning(f"  获取角色失败: {e}")
+            logger.warning(f"    失败: {e}")
             continue
 
         for ch in char_list:
             cid = ch["id"]
             relation = ch.get("relation", "")
-            if main_only and relation != "主角":
-                continue
             if cid not in characters:
                 characters[cid] = {
                     "id": cid,
                     "name": ch.get("name", ""),
                     "type": ch.get("type", 1),
-                    "relation": relation,
                     "images": ch.get("images"),
-                    "from_subjects": [],
+                    "relations": [],
                 }
-            characters[cid]["from_subjects"].append({
-                "subject_id": subject_id,
-                "subject_name": subject_name,
+            characters[cid]["relations"].append({
+                "subject_id": sid,
+                "subject_name": sname,
                 "relation": relation,
             })
 
-    logger.info(f"从番剧中提取到 {len(characters)} 个角色")
-    return characters
+    char_list_out = list(characters.values())
+    save_json(char_list_out, cache_file)
+    logger.info(f"共提取 {len(char_list_out)} 个去重角色")
+    return char_list_out
 
 
-def enrich_character_details(
-    client: BangumiClient,
-    characters: Dict[int, dict],
-) -> Dict[int, dict]:
-    """为每个角色补充详细信息 (stat.collects 用于排序)。"""
-    total = len(characters)
-    for idx, (cid, info) in enumerate(characters.items()):
-        logger.info(f"[{idx+1}/{total}] 补充角色详情: {info['name']} (id={cid})")
+# ── Step 3: 补充角色详情 (collects) ──
+
+def enrich_characters(client, char_list, cache_file="characters_enriched.json"):
+    """为每个角色请求详情，补充 collects / name_cn / gender 等字段。
+    
+    支持断点续传：已有 collects 字段的跳过。
+    """
+    cached = load_json(cache_file)
+    if cached:
+        enriched_ids = {ch["id"] for ch in cached if "collects" in ch}
+        if enriched_ids:
+            id_to_cached = {ch["id"]: ch for ch in cached}
+            for ch in char_list:
+                if ch["id"] in id_to_cached:
+                    ch.update(id_to_cached[ch["id"]])
+            need_enrich = [ch for ch in char_list if "collects" not in ch]
+            if not need_enrich:
+                logger.info(f"使用缓存的角色详情 ({len(cached)} 个角色均已补充)")
+                return char_list
+            logger.info(f"断点续传: 已有 {len(enriched_ids)} 个，还需补充 {len(need_enrich)} 个")
+
+    total = len(char_list)
+    need_enrich = [ch for ch in char_list if "collects" not in ch]
+    logger.info(f"需要补充详情的角色: {len(need_enrich)} / {total}")
+
+    for idx, ch in enumerate(need_enrich):
+        cid = ch["id"]
+        if idx % 100 == 0:
+            logger.info(f"  补充详情进度: {idx}/{len(need_enrich)}")
+            if idx > 0:
+                save_json(char_list, cache_file)
         try:
             detail = client.get_character(cid)
             stat = detail.get("stat", {})
-            info["collects"] = stat.get("collects", 0)
-            info["comments"] = stat.get("comments", 0)
-            info["summary"] = detail.get("summary", "")
-            info["name_cn"] = ""
+            ch["collects"] = stat.get("collects", 0)
+            ch["comments"] = stat.get("comments", 0)
+            ch["summary"] = detail.get("summary", "")
+            ch["gender"] = detail.get("gender", "")
+            ch["images"] = detail.get("images") or ch.get("images")
+            # 从 infobox 提取中文名
             for item in (detail.get("infobox") or []):
                 if item.get("key") == "简体中文名":
-                    info["name_cn"] = item.get("value", "")
+                    ch["name_cn"] = item.get("value", "")
                     break
-            info["gender"] = detail.get("gender", "")
-            info["images"] = detail.get("images") or info.get("images")
+            else:
+                ch["name_cn"] = ""
         except Exception as e:
-            logger.warning(f"  获取详情失败: {e}")
-            info.setdefault("collects", 0)
+            logger.warning(f"  角色 {cid} 详情获取失败: {e}")
+            ch["collects"] = 0
 
-    return characters
+    save_json(char_list, cache_file)
+    return char_list
 
 
-def try_fetch_top_characters_via_search(
-    client: BangumiClient,
-    target: int = 500,
-) -> List[dict]:
-    """尝试通过搜索接口获取人气角色。
+# ── Step 4: 汇总输出 ──
 
-    search/characters 需要 keyword 且无 sort 选项，
-    所以用单字母/常见词作为宽泛关键词来尽量覆盖更多角色，
-    再按 collects 排序去重。这是一种尽力而为的方案。
+def build_final_outputs(anime_list, char_list):
+    """生成最终的结构化数据：
+
+    1. 角色列表（按 collects 降序）
+    2. 番剧-角色映射（每部番剧的主角/配角列表）
+    3. 汇总 markdown 报告
     """
-    logger.info(f"尝试通过搜索接口获取 top {target} 角色...")
-    seen_ids = set()   # type: set
-    all_chars = []     # type: List[dict]
+    # 按收藏排序
+    sorted_chars = sorted(char_list, key=lambda x: x.get("collects", 0), reverse=True)
+    save_json(sorted_chars, "characters_ranked.json")
 
-    broad_keywords = ["の", "ア", "ル", "リ", "ン", "マ", "ス", "カ", "レ", "ト"]
+    # 番剧→角色映射
+    anime_char_map = {}  # type: Dict[int, dict]
+    for anime in anime_list:
+        sid = anime["id"]
+        anime_char_map[sid] = {
+            "subject_id": sid,
+            "name": anime.get("name", ""),
+            "name_cn": anime.get("name_cn", ""),
+            "rank": anime.get("rating", {}).get("rank"),
+            "score": anime.get("rating", {}).get("score"),
+            "main_characters": [],
+            "supporting_characters": [],
+        }
 
-    for kw in broad_keywords:
-        logger.info(f"  搜索关键词: '{kw}'")
-        offset = 0
-        while offset < 200:
-            try:
-                result = client.search_characters(kw, limit=50, offset=offset)
-            except Exception as e:
-                logger.warning(f"    搜索失败: {e}")
-                break
-            data = result.get("data", [])
-            if not data:
-                break
-            for ch in data:
-                cid = ch["id"]
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    all_chars.append(ch)
-            offset += len(data)
-
-        if len(all_chars) >= target * 3:
-            break
-
-    logger.info(f"  搜索共获取 {len(all_chars)} 个去重角色，开始获取详情用于排序...")
-
-    enriched = []  # type: List[dict]
-    for idx, ch in enumerate(all_chars):
-        cid = ch["id"]
-        if idx % 50 == 0:
-            logger.info(f"  补充详情进度: {idx}/{len(all_chars)}")
-        try:
-            detail = client.get_character(cid)
-            stat = detail.get("stat", {})
-            enriched.append({
-                "id": cid,
+    for ch in sorted_chars:
+        for rel in ch.get("relations", []):
+            sid = rel["subject_id"]
+            if sid not in anime_char_map:
+                continue
+            entry = {
+                "character_id": ch["id"],
                 "name": ch.get("name", ""),
-                "collects": stat.get("collects", 0),
-                "comments": stat.get("comments", 0),
-                "summary": detail.get("summary", ""),
-                "images": detail.get("images"),
-                "gender": detail.get("gender", ""),
-            })
-        except Exception:
-            pass
+                "name_cn": ch.get("name_cn", ""),
+                "collects": ch.get("collects", 0),
+                "relation": rel.get("relation", ""),
+            }
+            if rel.get("relation") == "主角":
+                anime_char_map[sid]["main_characters"].append(entry)
+            else:
+                anime_char_map[sid]["supporting_characters"].append(entry)
 
-    enriched.sort(key=lambda x: x["collects"], reverse=True)
-    logger.info(
-        f"搜索方案获取到 {len(enriched)} 个角色"
-        + (f"，top1 collects={enriched[0]['collects']}" if enriched else "")
-    )
-    return enriched[:target]
+    anime_char_list = sorted(anime_char_map.values(), key=lambda x: x.get("rank") or 9999)
+    save_json(anime_char_list, "anime_character_map.json")
 
+    # 主角子集
+    main_chars = [ch for ch in sorted_chars if any(
+        r.get("relation") == "主角" for r in ch.get("relations", [])
+    )]
+    save_json(main_chars, "main_characters_ranked.json")
 
-def save_json(data, filename: str, directory: Path = DATA_DIR):
-    path = directory / filename
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"已保存: {path}")
+    return sorted_chars, anime_char_list, main_chars
 
 
-def generate_summary(
-    anime_list: List[dict],
-    characters_from_anime: Dict[int, dict],
-    search_characters: List[dict],
-    merged_characters: List[dict],
-):
-    """生成汇总信息到 information/ 目录。"""
+def generate_summary(anime_list, sorted_chars, anime_char_list, main_chars):
     lines = [
         "# Bangumi 数据采集汇总\n",
-        f"## 番剧 Top List",
-        f"- 共获取 **{len(anime_list)}** 部番剧（按排名排序）\n",
-        "| 排名 | ID | 名称 | 中文名 | 评分 | 排名值 |",
-        "|------|-----|------|--------|------|--------|",
+        f"采集时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
+        "## 概览\n",
+        f"| 指标 | 数量 |",
+        f"|------|------|",
+        f"| 番剧数量 | {len(anime_list)} |",
+        f"| 角色总数（去重） | {len(sorted_chars)} |",
+        f"| 其中主角数量 | {len(main_chars)} |",
+        "",
+        "## 番剧 Top 50（按 Bangumi 排名）\n",
+        "| # | ID | 名称 | 中文名 | 评分 | rank |",
+        "|---|-----|------|--------|------|------|",
     ]
     for i, a in enumerate(anime_list[:50], 1):
-        name = a.get("name", "")
-        name_cn = a.get("name_cn", "")
-        rating = a.get("rating", {})
-        score = rating.get("score", "N/A")
-        rank = rating.get("rank", "N/A")
-        lines.append(f"| {i} | {a['id']} | {name} | {name_cn} | {score} | {rank} |")
-    if len(anime_list) > 50:
-        lines.append(f"\n*（仅展示前 50 部，完整列表见 local_data/bangumi/top_anime.json）*\n")
+        r = a.get("rating", {})
+        lines.append(
+            f"| {i} | {a['id']} | {a.get('name','')} "
+            f"| {a.get('name_cn','')} | {r.get('score','N/A')} | {r.get('rank','N/A')} |"
+        )
+    lines.append(f"\n*完整列表: local_data/bangumi/top_anime.json*\n")
 
-    lines.append(f"\n## 角色列表")
-    lines.append(f"- 从番剧中提取的主角: **{len(characters_from_anime)}** 个")
-    lines.append(f"- 搜索接口获取角色: **{len(search_characters)}** 个")
-    lines.append(f"- 合并去重后: **{len(merged_characters)}** 个\n")
+    lines.append("## 人气角色 Top 50（按收藏数）\n")
+    lines.append("| # | ID | 名称 | 中文名 | 收藏数 | 所属番剧 | 角色类型 |")
+    lines.append("|---|-----|------|--------|--------|----------|----------|")
+    for i, ch in enumerate(sorted_chars[:50], 1):
+        rels = ch.get("relations", [])
+        subj = ", ".join(r["subject_name"] for r in rels[:2])
+        if len(rels) > 2:
+            subj += f" 等{len(rels)}部"
+        rel_types = ", ".join(sorted(set(r.get("relation", "") for r in rels)))
+        lines.append(
+            f"| {i} | {ch['id']} | {ch.get('name','')} "
+            f"| {ch.get('name_cn','')} | {ch.get('collects',0)} "
+            f"| {subj} | {rel_types} |"
+        )
+    lines.append(f"\n*完整列表: local_data/bangumi/characters_ranked.json*\n")
 
-    lines.append("### Top 50 角色（按收藏数排序）")
-    lines.append("| 排名 | ID | 名称 | 中文名 | 收藏数 | 来源番剧 |")
-    lines.append("|------|-----|------|--------|--------|----------|")
-    for i, ch in enumerate(merged_characters[:50], 1):
-        name = ch.get("name", "")
-        name_cn = ch.get("name_cn", "")
-        collects = ch.get("collects", 0)
-        subjects = ch.get("from_subjects", [])
-        subj_str = ", ".join(s["subject_name"] for s in subjects[:3]) if subjects else "-"
-        lines.append(f"| {i} | {ch['id']} | {name} | {name_cn} | {collects} | {subj_str} |")
-    if len(merged_characters) > 50:
-        lines.append(f"\n*（仅展示前 50 个，完整列表见 local_data/bangumi/merged_characters.json）*\n")
+    lines.append("## 数据文件说明\n")
+    lines.append("| 文件 | 说明 |")
+    lines.append("|------|------|")
+    lines.append("| `top_anime.json` | Top 300 番剧完整数据 |")
+    lines.append("| `characters_ranked.json` | 所有角色（按收藏数排序），含番剧关联 |")
+    lines.append("| `main_characters_ranked.json` | 仅主角（按收藏数排序） |")
+    lines.append("| `anime_character_map.json` | 番剧→角色映射（每部番剧的主角/配角列表） |")
 
     summary_path = INFO_DIR / "bangumi_summary.md"
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write("\n".join(lines) + "\n")
     logger.info(f"汇总已保存: {summary_path}")
 
 
@@ -262,54 +301,28 @@ def main():
     logger.info("Bangumi 数据采集开始")
     logger.info("=" * 60)
 
-    # ── Step 1: 获取 top 300 番剧 ──
-    logger.info("\n[Step 1] 获取人气 Top 300 番剧")
+    # Step 1
+    logger.info("\n[Step 1/4] 获取人气 Top 300 番剧")
     anime_list = fetch_top_anime(client, top_n=300)
-    save_json(anime_list, "top_anime.json")
 
-    # ── Step 2: 尝试通过搜索获取 top 角色 ──
-    logger.info("\n[Step 2] 尝试通过搜索获取人气 Top 500 角色")
-    search_chars = try_fetch_top_characters_via_search(client, target=500)
-    save_json(search_chars, "search_top_characters.json")
+    # Step 2
+    logger.info("\n[Step 2/4] 从番剧获取角色 & 建立关联")
+    char_list = fetch_characters_from_anime(client, anime_list)
 
-    # ── Step 3: 从 top 300 番剧提取主角 ──
-    logger.info("\n[Step 3] 从 Top 300 番剧中提取主要角色")
-    anime_characters = fetch_characters_from_anime(client, anime_list, main_only=True)
+    # Step 3
+    logger.info("\n[Step 3/4] 补充角色详情 (collects / name_cn / gender)")
+    char_list = enrich_characters(client, char_list)
 
-    logger.info("\n[Step 3.5] 补充角色详细信息")
-    anime_characters = enrich_character_details(client, anime_characters)
-    anime_chars_list = sorted(
-        anime_characters.values(), key=lambda x: x.get("collects", 0), reverse=True,
-    )
-    save_json(anime_chars_list, "anime_main_characters.json")
-
-    # ── Step 4: 合并去重 ──
-    logger.info("\n[Step 4] 合并两个来源的角色列表")
-    merged = {}  # type: Dict[int, dict]
-    for ch in anime_chars_list:
-        merged[ch["id"]] = ch
-    for ch in search_chars:
-        cid = ch["id"]
-        if cid not in merged:
-            merged[cid] = ch
-        else:
-            if ch.get("collects", 0) > merged[cid].get("collects", 0):
-                from_subjects = merged[cid].get("from_subjects", [])
-                merged[cid].update(ch)
-                merged[cid]["from_subjects"] = from_subjects
-
-    merged_list = sorted(merged.values(), key=lambda x: x.get("collects", 0), reverse=True)
-    save_json(merged_list, "merged_characters.json")
-    logger.info(f"合并后共 {len(merged_list)} 个角色")
-
-    # ── Step 5: 生成汇总 ──
-    logger.info("\n[Step 5] 生成汇总报告")
-    generate_summary(anime_list, anime_characters, search_chars, merged_list)
+    # Step 4
+    logger.info("\n[Step 4/4] 汇总输出")
+    sorted_chars, anime_char_list, main_chars = build_final_outputs(anime_list, char_list)
+    generate_summary(anime_list, sorted_chars, anime_char_list, main_chars)
 
     logger.info("\n" + "=" * 60)
     logger.info("采集完成!")
-    logger.info(f"  番剧数量: {len(anime_list)}")
-    logger.info(f"  角色数量(合并后): {len(merged_list)}")
+    logger.info(f"  番剧: {len(anime_list)} 部")
+    logger.info(f"  角色(全部): {len(sorted_chars)} 个")
+    logger.info(f"  角色(主角): {len(main_chars)} 个")
     logger.info("=" * 60)
 
 
