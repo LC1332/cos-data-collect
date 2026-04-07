@@ -20,6 +20,43 @@
 - [ ] 逐个抓取角色的cosplay图像
 - [ ] 清理角色和cosplay的所有数据
 
+# 建立generated图-角色图-group图的对比
+
+在local_data/group中我放了我生成的5张角色的图
+角色原图在local_data/bangumi/character_images
+生成的cos图在local_data/generated_images
+
+帮我生成一个紧凑一点的页面（一行显示两组） 依次显示 cos图 角色图和合影
+（图片不要crop 保aspect缩放）
+
+# 建立角色图 generated图和真实cos图的对比
+
+在local_data/generated_images 中 我用角色id放了角色用z-image模型生成的角色图
+帮我做个页面，可以对比 角色原图 - 生成图 和 cosplay图（如有，需要经过了gemini认证）
+注意保持图片不要裁切保证aspect缩放
+
+# 通过model_scope尝试qwen-image-edit
+
+在src/char2cos中，我放置了一个可参考的app.py
+
+注意我在env中增加了 MODEL_SCOPE_KEY
+
+我这里希望编写一段新的代码，
+
+借助model_scope的api，使用qwen-image-edit-2511模型
+
+把图片
+local_data/bangumi/character_images/1211_medium.jpg
+
+通过prompt
+
+“把图片转化为物语系列的忍野忍的真人cosplay, 年轻, 大学生, photorealistic”
+
+试图转化为cosplay照片
+
+注意model scope的接口可能发生了一些该拜年
+
+
 # 一个简易的VLM识别的benchmark
 
 这里我们发现VLM本来就具有一定的视觉识别的能力
